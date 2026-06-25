@@ -445,8 +445,13 @@ def run_validity_preprocessing_and_filtering(
         plausibility_check_symmetry=check_symmetry,
     )
 
-    # Create source IDs for tracking
-    structure_sources = [f"structure_{i}" for i in range(len(structures))]
+    # Create source IDs for tracking. Prefer the original CIF filename
+    # (set at load time) so results can be traced back to the input file;
+    # fall back to a generic label for inputs without a filename (e.g. CSV).
+    structure_sources = [
+        structure.properties.get("original_filename", f"structure_{i}")
+        for i, structure in enumerate(structures)
+    ]
     validity_preprocessor_result = validity_preprocessor.run(
         structures, structure_sources=structure_sources
     )
@@ -507,6 +512,12 @@ def run_validity_preprocessing_and_filtering(
         else 0.0,
         "valid_structure_ids": valid_structure_ids,
         "valid_structure_sources": valid_structure_sources,
+        # Full mapping of every input structure (valid AND invalid) to its
+        # original source/filename, e.g. {"structure_0": "Li3PO4.cif"}.
+        "structure_id_map": {
+            f"structure_{i}": source
+            for i, source in enumerate(structure_sources)
+        },
     }
 
     # Log final memory usage
@@ -988,6 +999,12 @@ def main():
                         from pymatgen.core import Structure
 
                         structure = Structure.from_file(cif_path)
+                        # Preserve the original filename so per-structure
+                        # results can be traced back to the input CIF.
+                        structure.properties["original_filename"] = Path(
+                            cif_path
+                        ).name
+                        structure.properties["original_path"] = str(cif_path)
                         structures.append(structure)
                         pbar.set_postfix(
                             {
