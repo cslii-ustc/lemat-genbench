@@ -93,7 +93,7 @@ esw_settings:
 property_settings:
   include_band_gap: true
   include_migration_barrier: true
-  include_esw: false
+  include_esw: true
   band_gap_backend: hamgnn
   band_gap_backend_kwargs: {}
   band_gap_preprocess: true

@@ -1,10 +1,10 @@
-# 氧化态分配、BVlain/HamGNN readiness 与 ESW 集成修改说明
+# Modification Notes for Oxidation-State Assignment, BVlain/HamGNN Readiness, and ESW Integration
 
-本文档说明当前程序相对最初程序的主要改动。修改目标是：在 validity 阶段加入元素有效性检查，过滤掉本任务不接受的元素；在 comprehensive run 请求 `migration_barrier` 或包含 migration barrier 的 `property` 时，提前完成氧化态分配和 BVlain readiness 检查；在请求 HamGNN `band_gap` 或包含 HamGNN band gap 的 `property` 时，从当前服务器的 OpenMX `DFT_DATA19` 目录读取支持元素并做 HamGNN readiness 检查；新增 Li-exchange-only ESW 性质计算；不支持请求性质计算的结构会被过滤，支持的结构继续执行后续计算。
+This document describes the major changes in the current program compared with the original program. The goals of these modifications are: to add an element-validity check during the validity stage and filter out elements that are not accepted for this task; to complete oxidation-state assignment and BVlain readiness checks in advance when a comprehensive run requests `migration_barrier` or a `property` calculation that includes migration barrier; to read the supported elements from the OpenMX `DFT_DATA19` directory on the current server and perform a HamGNN readiness check when HamGNN `band_gap` or a `property` calculation that includes HamGNN band gap is requested; to add a Li-exchange-only ESW property calculation; and to filter out structures that do not support the requested property calculations while allowing supported structures to continue with subsequent calculations.
 
-## 1. 总体行为变化
+## 1. Overall behavior changes
 
-最初程序的流程是：
+The original program workflow was:
 
 ```text
 load structures
@@ -15,7 +15,7 @@ load structures
 -> remaining benchmarks
 ```
 
-当前程序在 comprehensive runner 中增加了一个可选 property gating 步骤：
+The current program adds an optional property-gating step to the comprehensive runner:
 
 ```text
 load structures
@@ -33,7 +33,7 @@ load structures
 -> remaining benchmarks
 ```
 
-当前默认配置是：
+The current default configuration is:
 
 ```yaml
 property_gating:
@@ -44,52 +44,52 @@ property_gating:
   hamgnn_dft_data: null
 ```
 
-因此，只有当 `--families` 包含需要 readiness 的 property families 时，才启用 property gating。默认 comprehensive run 没有包含 `migration_barrier`、`band_gap` 或 `property`，因此不受影响。
+Therefore, property gating is enabled only when `--families` contains property families that require readiness checks. The default comprehensive run does not include `migration_barrier`, `band_gap`, or `property`, so it is not affected.
 
-## 2. 语义说明
+## 2. Semantic notes
 
-这次改动扩展了 `overall_valid` 的定义。
+This modification expands the definition of `overall_valid`.
 
-- `overall_valid` 现在由 charge neutrality、interatomic distance、physical plausibility、element validity 共同决定。
-- `element_valid=False` 表示结构含有本任务禁用的元素。
-- 氧化态分配、BVlain readiness 和 HamGNN readiness 不会写入 `overall_valid`。
-- readiness 只作为后续 property 计算前的门控条件。
-- 只有 `overall_valid=True` 的结构才会做 property readiness 检查，避免在已经 invalid 的结构上浪费计算。
+- `overall_valid` is now jointly determined by charge neutrality, interatomic distance, physical plausibility, and element validity.
+- `element_valid=False` means that the structure contains elements forbidden for this task.
+- Oxidation-state assignment, BVlain readiness, and HamGNN readiness are not written into `overall_valid`.
+- Readiness is used only as a gating condition before subsequent property calculations.
+- Property readiness checks are performed only for structures with `overall_valid=True`, avoiding wasted computation on structures that are already invalid.
 
-当前默认 `failure_policy: filter` 的含义是：
+The current default `failure_policy: filter` means:
 
-- 支持请求性质计算的结构继续跑后续所有 preprocessors/benchmarks。
-- 不支持请求性质计算的结构被跳过。
-- 整个 run 不会因为单个结构不支持 BVlain 或 HamGNN/OpenMX 而停止。
+- Structures that support the requested property calculations continue to run all subsequent preprocessors/benchmarks.
+- Structures that do not support the requested property calculations are skipped.
+- The entire run will not stop because a single structure does not support BVlain or HamGNN/OpenMX.
 
-如果改成 `abort_run`，则只要有一个 valid 结构不 ready，就会停止后续所有计算。如果改成 `warn`，则只记录问题，不过滤结构。
+If this is changed to `abort_run`, then as soon as one valid structure is not ready, all subsequent calculations will be stopped. If it is changed to `warn`, issues will only be recorded, and structures will not be filtered.
 
-## 3. 主要文件改动
+## 3. Major file changes
 
-| 文件 | 改动说明 |
+| File | Description of changes |
 |---|---|
-| `src/lemat_genbench/utils/oxidation_state.py` | 新增氧化态分配和 BVlain readiness 工具函数。 |
-| `src/lemat_genbench/utils/hamgnn_readiness.py` | 新增 HamGNN/OpenMX readiness 工具函数，从当前 `DFT_DATA19` 安装目录读取支持元素。 |
-| `src/lemat_genbench/preprocess/validity_preprocess.py` | 增加 forbidden-element validity 检查，并给 `ValidityPreprocessor` 增加可选氧化态/readiness 记录能力。 |
-| `src/lemat_genbench/properties/migration_barrier.py` | migration barrier 计算优先使用 validity 阶段保存的氧化态记录。 |
-| `src/lemat_genbench/properties/esw.py` | 新增 Li-exchange-only ESW 核心计算，包括 MACE relaxation、MP entries cache、phase diagram 和 Li chemical-potential scan。 |
-| `src/lemat_genbench/preprocess/esw_preprocess.py` | 新增 ESW preprocessor，将 ESW、氧化/还原电位、Ehull 和错误信息写入 structure properties。 |
-| `src/lemat_genbench/metrics/esw_metric.py` | 新增 ESW 聚合指标。 |
-| `src/lemat_genbench/benchmarks/esw_benchmark.py` | 新增单独 `esw` benchmark family。 |
-| `src/lemat_genbench/benchmarks/property_benchmark.py` | `property` benchmark 新增可选 `include_esw`。 |
-| `scripts/run_benchmarks.py` | comprehensive runner 新增 `property_gating` 解析、过滤和结果元数据输出。 |
-| `src/lemat_genbench/cli.py` | 轻量 CLI 支持 `esw` benchmark，并生成默认 `esw.yaml`。 |
-| `src/config/comprehensive.yaml` | 默认启用 property gating，并设置 `failure_policy: filter`；新增 `esw_settings`。 |
-| `src/config/esw.yaml` | 新增单独 ESW benchmark 配置。 |
-| `src/config/property.yaml` | `property` 配置新增 `include_esw` 和 ESW 参数。 |
-| `EVALUATION.md` | 在配置参考中说明 `property_gating` 是 property-readiness filtering。 |
-| `tests/test_validity_preprocess.py` | 新增 readiness record 的基础测试。 |
-| `tests/test_hamgnn_readiness.py` | 新增 HamGNN/OpenMX 元素支持检查测试。 |
-| `tests/test_esw_metric.py` | 新增 ESW metric/benchmark 的轻量聚合测试。 |
+| `src/lemat_genbench/utils/oxidation_state.py` | Added utility functions for oxidation-state assignment and BVlain readiness. |
+| `src/lemat_genbench/utils/hamgnn_readiness.py` | Added utility functions for HamGNN/OpenMX readiness; supported elements are read from the current `DFT_DATA19` installation directory. |
+| `src/lemat_genbench/preprocess/validity_preprocess.py` | Added forbidden-element validity checks and optional oxidation-state/readiness recording to `ValidityPreprocessor`. |
+| `src/lemat_genbench/properties/migration_barrier.py` | Migration barrier calculation now preferentially uses the oxidation-state record saved during the validity stage. |
+| `src/lemat_genbench/properties/esw.py` | Added the core Li-exchange-only ESW calculation, including MACE relaxation, MP entries cache, phase diagram, and Li chemical-potential scan. |
+| `src/lemat_genbench/preprocess/esw_preprocess.py` | Added an ESW preprocessor that writes ESW, oxidation/reduction potentials, Ehull, and error information into structure properties. |
+| `src/lemat_genbench/metrics/esw_metric.py` | Added ESW aggregation metrics. |
+| `src/lemat_genbench/benchmarks/esw_benchmark.py` | Added a standalone `esw` benchmark family. |
+| `src/lemat_genbench/benchmarks/property_benchmark.py` | Added optional `include_esw` to the `property` benchmark. |
+| `scripts/run_benchmarks.py` | Added `property_gating` parsing, filtering, and result metadata output to the comprehensive runner. |
+| `src/lemat_genbench/cli.py` | Added lightweight CLI support for the `esw` benchmark and generation of the default `esw.yaml`. |
+| `src/config/comprehensive.yaml` | Enabled property gating by default, set `failure_policy: filter`, and added `esw_settings`. |
+| `src/config/esw.yaml` | Added standalone ESW benchmark configuration. |
+| `src/config/property.yaml` | Added `include_esw` and ESW parameters to the `property` configuration. |
+| `EVALUATION.md` | Documented `property_gating` as property-readiness filtering in the configuration reference. |
+| `tests/test_validity_preprocess.py` | Added basic tests for readiness records. |
+| `tests/test_hamgnn_readiness.py` | Added tests for HamGNN/OpenMX element-support checks. |
+| `tests/test_esw_metric.py` | Added lightweight aggregation tests for ESW metric/benchmark. |
 
-## 4. 元素有效性检查
+## 4. Element-validity check
 
-validity 阶段新增 forbidden-element 检查。默认禁用元素为：
+A forbidden-element check has been added to the validity stage. The default forbidden elements are:
 
 ```python
 {
@@ -101,21 +101,21 @@ validity 阶段新增 forbidden-element 检查。默认禁用元素为：
 }
 ```
 
-如果结构含有上述任意元素：
+If a structure contains any of the above elements:
 
 ```python
 structure.properties["element_valid"] = False
 structure.properties["overall_valid"] = False
 ```
 
-同时会写入：
+The following fields are also written:
 
 ```python
 structure.properties["element_check_details"]
 structure.properties["validity_details"]["element_filter"]
 ```
 
-示例：
+Example:
 
 ```json
 {
@@ -129,18 +129,18 @@ structure.properties["validity_details"]["element_filter"]
 }
 ```
 
-因此，`overall_valid` 现在表示“结构有效性 + 元素适用域”共同成立。
+Therefore, `overall_valid` now means that both structural validity and the element application domain are satisfied.
 
-## 5. 氧化态分配记录
+## 5. Oxidation-state assignment records
 
-新增的核心记录键是：
+The new core record keys are:
 
 ```python
 OXIDATION_STATE_RECORD_KEY = "oxidation_state_record"
 MIGRATION_BARRIER_READY_KEY = "migration_barrier_ready"
 ```
 
-每个 ready check 成功或失败的结构会在 `Structure.properties` 中写入：
+For each structure that succeeds or fails the readiness check, the following fields are written into `Structure.properties`:
 
 ```python
 structure.properties["oxidation_state_record"]
@@ -149,7 +149,7 @@ structure.properties["oxidation_state_status"]
 structure.properties["oxidation_state_confidence"]
 ```
 
-`oxidation_state_record` 中主要包含：
+The main fields in `oxidation_state_record` are:
 
 ```json
 {
@@ -179,7 +179,7 @@ structure.properties["oxidation_state_confidence"]
 }
 ```
 
-失败时会记录失败原因，例如：
+On failure, the failure reason is recorded, for example:
 
 ```json
 {
@@ -192,63 +192,63 @@ structure.properties["oxidation_state_confidence"]
 }
 ```
 
-## 6. 氧化态候选来源
+## 6. Oxidation-state candidate sources
 
-当前氧化态分配会按以下来源生成候选：
+The current oxidation-state assignment generates candidates from the following sources:
 
-| 来源 | 说明 |
+| Source | Description |
 |---|---|
-| `cif` | 如果输入结构本身带 site oxidation states，则优先作为候选。 |
-| `bvanalyzer` | 使用 Pymatgen `BVAnalyzer` 分配氧化态。 |
-| `composition_guess` | 使用已有 LeMat ICSD 氧化态先验做 composition-level charge balance guess。 |
-| `composition_guess_all_states` | 常规候选失败时，允许更宽的 oxidation-state 搜索。 |
+| `cif` | If the input structure already contains site oxidation states, they are used preferentially as a candidate. |
+| `bvanalyzer` | Uses Pymatgen `BVAnalyzer` to assign oxidation states. |
+| `composition_guess` | Uses the existing LeMat ICSD oxidation-state prior to perform composition-level charge-balance guessing. |
+| `composition_guess_all_states` | Allows a broader oxidation-state search when the normal candidates fail. |
 
-候选会检查：
+Candidates are checked for:
 
-- 总电荷是否接近中性。
-- mobile ion 是否存在。
-- 元素种类数是否满足 `min_num_elements`。
-- mobile ion 氧化态是否匹配，例如 `Li1+` 要求 Li 为 +1。
-- 常见化学约束，例如 alkali 为 +1、alkaline-earth 为 +2、F 为 -1、O 不为正价。
-- BVS mismatch 统计。
-- 如果启用 `check_bvlain_parameters`，尝试调用 BVlain 做参数/readiness 检查。
+- Whether the total charge is close to neutral.
+- Whether the mobile ion is present.
+- Whether the number of element types satisfies `min_num_elements`.
+- Whether the mobile-ion oxidation state matches the requirement, for example `Li1+` requires Li to be +1.
+- Common chemical constraints, for example alkali metals are +1, alkaline-earth metals are +2, F is -1, and O should not have a positive oxidation state.
+- BVS mismatch statistics.
+- If `check_bvlain_parameters` is enabled, BVlain is called to perform the parameter/readiness check.
 
 ## 7. HamGNN/OpenMX readiness
 
-新增的核心记录键是：
+The new core record keys are:
 
 ```python
 HAMGNN_READINESS_RECORD_KEY = "hamgnn_readiness_record"
 HAMGNN_READY_KEY = "hamgnn_ready"
 ```
 
-HamGNN readiness 不使用固定的全局支持元素表，而是在运行时读取当前服务器配置的 OpenMX `DFT_DATA19` 目录：
+HamGNN readiness does not use a fixed global table of supported elements. Instead, it reads the OpenMX `DFT_DATA19` directory configured on the current server at runtime:
 
-- 优先使用 `property_gating.hamgnn_dft_data`。
-- 如果未配置，则读取 `band_gap_settings.backend_kwargs.dft_data`。
-- 如果是 `property` family，则也会读取 `property_settings.band_gap_backend_kwargs.dft_data`。
-- 如果配置里都没有，则读取环境变量 `HAMGNN_DFT_DATA`。
+- It first uses `property_gating.hamgnn_dft_data`.
+- If not configured, it reads `band_gap_settings.backend_kwargs.dft_data`.
+- If the family is `property`, it also reads `property_settings.band_gap_backend_kwargs.dft_data`.
+- If none of the above is configured, it reads the environment variable `HAMGNN_DFT_DATA`.
 
-检查逻辑是：
+The check logic is:
 
 ```text
-DFT_DATA19/VPS 中出现的元素
-∩ DFT_DATA19/PAO 中出现的元素
--> 当前 OpenMX 安装支持的元素集合
+elements appearing in DFT_DATA19/VPS
+∩ elements appearing in DFT_DATA19/PAO
+-> element set supported by the current OpenMX installation
 ```
 
-如果结构中有元素不在该集合中，则：
+If a structure contains elements outside this set, then:
 
 ```python
 structure.properties["hamgnn_ready"] = False
 structure.properties["hamgnn_readiness_record"]["unsupported_elements"] = [...]
 ```
 
-如果 `DFT_DATA19` 路径没有配置、路径不存在，或无法从 `VPS`/`PAO` 读出支持元素，也会记为 not ready，并在 `failure_reasons` 中写明原因。
+If the `DFT_DATA19` path is not configured, the path does not exist, or supported elements cannot be read from `VPS`/`PAO`, the structure is also marked as not ready, and the reason is written into `failure_reasons`.
 
-## 8. ValidityPreprocessor 的变化
+## 8. Changes to `ValidityPreprocessor`
 
-`ValidityPreprocessor` 新增可选参数：
+`ValidityPreprocessor` now has the following optional parameters:
 
 ```python
 forbidden_elements: list[str] | tuple[str, ...] | None = None
@@ -261,9 +261,9 @@ oxidation_charge_tolerance: float = 1e-3
 bvlain_settings: Dict[str, Any] | None = None
 ```
 
-氧化态/readiness 默认保持关闭，因此直接使用 `ValidityPreprocessor()` 时，不会额外调用 BVlain。forbidden-element 检查默认启用；如需禁用，可传入 `forbidden_elements=[]`。
+Oxidation-state/readiness checks remain disabled by default, so directly using `ValidityPreprocessor()` will not additionally call BVlain. The forbidden-element check is enabled by default; to disable it, pass `forbidden_elements=[]`.
 
-当 comprehensive runner 需要 migration/property gating 时，会传入：
+When the comprehensive runner requires migration/property gating, it passes:
 
 ```python
 assign_oxidation_states=True
@@ -273,7 +273,7 @@ migration_min_num_elements=2
 check_bvlain_parameters=True
 ```
 
-生成的 validity final scores 会额外包含：
+The generated validity final scores additionally include:
 
 ```json
 {
@@ -286,30 +286,30 @@ check_bvlain_parameters=True
 }
 ```
 
-其中 `element_validity_*` 始终反映 validity 元素检查；`oxidation_state_*` 和 `migration_barrier_ready_*` 只在实际启用氧化态/readiness 检查时出现。
+Here, `element_validity_*` always reflects the validity-stage element check; `oxidation_state_*` and `migration_barrier_ready_*` appear only when oxidation-state/readiness checks are actually enabled.
 
-## 9. Comprehensive runner 的变化
+## 9. Changes to the comprehensive runner
 
-`scripts/run_benchmarks.py` 新增两个主要函数：
+`scripts/run_benchmarks.py` adds two main functions:
 
 ```python
 get_property_gating_settings(...)
 apply_property_gating(...)
 ```
 
-`get_property_gating_settings` 负责从配置中解析：
+`get_property_gating_settings` parses the following from the configuration:
 
-- 是否启用 gating。
-- 哪些 families 会触发 gating。
-- 本次运行是否需要 migration/BVlain readiness。
-- 本次运行是否需要 HamGNN/OpenMX readiness。
-- mobile ion。
-- readiness 所需最小元素种类数。
-- BVlain 参数。
-- HamGNN `DFT_DATA19` 路径。
-- `failure_policy`。
+- Whether gating is enabled.
+- Which families trigger gating.
+- Whether the current run requires migration/BVlain readiness.
+- Whether the current run requires HamGNN/OpenMX readiness.
+- The mobile ion.
+- The minimum number of element types required for readiness.
+- BVlain parameters.
+- The HamGNN `DFT_DATA19` path.
+- `failure_policy`.
 
-`apply_property_gating` 在 validity 之后、其他 preprocessors 之前执行：
+`apply_property_gating` is executed after validity and before other preprocessors:
 
 ```text
 valid_structures
@@ -318,21 +318,21 @@ valid_structures
 -> return filtered structures
 ```
 
-默认 `filter` 策略下，被过滤的结构不会进入后续：
+Under the default `filter` policy, filtered structures will not enter subsequent:
 
 - fingerprint/distribution/stability preprocessors
 - `migration_barrier`
 - `band_gap`
 - `property`
-- 其他 remaining benchmarks
+- other remaining benchmarks
 
-这满足“只跳过不支持请求性质计算的结构，其他正常结构继续计算”的需求。
+This satisfies the requirement to “skip only structures that do not support the requested property calculations, while allowing all other normal structures to continue calculation.”
 
-如果本次只请求 HamGNN `band_gap`，不会启用 BVlain readiness，也不会要求结构含 Li。如果本次只请求 `migration_barrier`，不会启用 HamGNN/OpenMX 元素支持检查。`property` family 会根据 `include_band_gap`、`include_migration_barrier` 和 `band_gap_backend` 决定需要哪些 readiness。
+If only HamGNN `band_gap` is requested in the current run, BVlain readiness is not enabled, and the structure is not required to contain Li. If only `migration_barrier` is requested, the HamGNN/OpenMX element-support check is not enabled. The `property` family decides which readiness checks are needed based on `include_band_gap`, `include_migration_barrier`, and `band_gap_backend`.
 
-## 10. 输出变化
+## 10. Output changes
 
-结果 JSON 中新增 `validity_filtering.property_gating`：
+The result JSON adds `validity_filtering.property_gating`:
 
 ```json
 {
@@ -366,7 +366,7 @@ valid_structures
 }
 ```
 
-结果 JSON 中还会新增 `validity_filtering.oxidation_state_records`：
+The result JSON also adds `validity_filtering.oxidation_state_records`:
 
 ```json
 [
@@ -384,7 +384,7 @@ valid_structures
 ]
 ```
 
-当启用 HamGNN readiness 时，还会新增 `validity_filtering.hamgnn_readiness_records`：
+When HamGNN readiness is enabled, `validity_filtering.hamgnn_readiness_records` is also added:
 
 ```json
 [
@@ -405,7 +405,7 @@ valid_structures
 ]
 ```
 
-终端摘要中会显示：
+The terminal summary displays:
 
 ```text
 Property-ready structures: 82 / 100
@@ -413,33 +413,33 @@ Migration-barrier ready: 90 / 100
 HamGNN/OpenMX ready: 88 / 100
 ```
 
-日志中会显示：
+The logs display:
 
 ```text
 Property gating: 82/100 valid structures are property-ready
 Property gating filtered 18 structures before remaining benchmarks.
 ```
 
-## 11. Migration barrier 计算变化
+## 11. Changes to migration barrier calculation
 
-最初 `migration_barrier.py` 的 BVlain 计算主要依赖：
+The original BVlain calculation in `migration_barrier.py` mainly relied on:
 
 - `oxi_check=True`
 - `add_oxidation_state_by_guess`
 
-当前程序新增优先路径：
+The current program adds a preferred path:
 
 ```text
-1. 如果结构 properties 里已有 oxidation_state_record，则用记录里的 site-wise 氧化态装饰结构。
-2. 如果没有记录，则临时调用 assign_oxidation_states_for_bvlain。
-3. 如果前两步失败，再走原来的 BVlain fallback chain。
+1. If an oxidation_state_record already exists in structure properties, use the site-wise oxidation states in the record to decorate the structure.
+2. If no record exists, temporarily call assign_oxidation_states_for_bvlain.
+3. If the first two steps fail, fall back to the original BVlain fallback chain.
 ```
 
-这样 comprehensive run 中 validity 阶段分配好的氧化态可以被后面的 migration barrier 复用，避免重复和不一致。
+In this way, oxidation states assigned during the validity stage in a comprehensive run can be reused by the subsequent migration barrier calculation, avoiding duplication and inconsistency.
 
-## 12. 配置变化
+## 12. Configuration changes
 
-`src/config/comprehensive.yaml` 新增：
+`src/config/comprehensive.yaml` adds:
 
 ```yaml
 validity_settings:
@@ -498,23 +498,23 @@ migration_barrier_settings:
   timeout: 30
 ```
 
-如果后续希望改成其他策略，只需要改：
+To change to another strategy later, only modify:
 
 ```yaml
 failure_policy: warn
 ```
 
-或：
+or:
 
 ```yaml
 failure_policy: abort_run
 ```
 
-`hamgnn_dft_data: null` 表示不在配置中写死路径，运行时使用 `band_gap_settings.backend_kwargs.dft_data`、`property_settings.band_gap_backend_kwargs.dft_data` 或环境变量 `HAMGNN_DFT_DATA`。
+`hamgnn_dft_data: null` means that the path is not hard-coded in the configuration. At runtime, the program uses `band_gap_settings.backend_kwargs.dft_data`, `property_settings.band_gap_backend_kwargs.dft_data`, or the environment variable `HAMGNN_DFT_DATA`.
 
-## 13. 测试和验证
+## 13. Testing and validation
 
-新增测试文件：
+The following test files have been added:
 
 ```text
 tests/test_validity_preprocess.py
@@ -522,57 +522,57 @@ tests/test_hamgnn_readiness.py
 tests/test_esw_metric.py
 ```
 
-覆盖内容：
+They cover:
 
-- 开启氧化态分配时，validity preprocessor 能写入 `oxidation_state_record`。
-- LiF 这类含 Li 结构会得到 `migration_barrier_ready=True`。
-- 不含 Li 的 Si 结构会得到 `migration_barrier_ready=False` 并记录失败原因。
-- 含 forbidden element 的 Hg 结构会得到 `element_valid=False` 和 `overall_valid=False`。
-- 纯 Li 结构虽然含 Li，但因为元素种类数不足 2，会得到 `migration_barrier_ready=False`。
-- HamGNN readiness 会从模拟的 `DFT_DATA19/VPS` 和 `DFT_DATA19/PAO` 目录读取支持元素。
-- 当结构含有当前 OpenMX 安装不支持的元素时，会得到 `hamgnn_ready=False` 并记录 `unsupported_elements`。
-- ESW metric 能正确聚合有效/缺失 ESW 值。
-- ESW target window 会将 `fraction_in_target_window` 作为 primary metric。
-- ESW benchmark 在 `preprocess=False` 时能读取已有 `structure.properties["esw"]`。
+- When oxidation-state assignment is enabled, the validity preprocessor can write `oxidation_state_record`.
+- Li-containing structures such as LiF obtain `migration_barrier_ready=True`.
+- Si structures without Li obtain `migration_barrier_ready=False` and record the failure reason.
+- Hg-containing structures with a forbidden element obtain `element_valid=False` and `overall_valid=False`.
+- A pure Li structure contains Li, but because the number of element types is less than 2, it obtains `migration_barrier_ready=False`.
+- HamGNN readiness reads supported elements from simulated `DFT_DATA19/VPS` and `DFT_DATA19/PAO` directories.
+- When a structure contains elements not supported by the current OpenMX installation, it obtains `hamgnn_ready=False` and records `unsupported_elements`.
+- The ESW metric correctly aggregates valid/missing ESW values.
+- The ESW target window uses `fraction_in_target_window` as the primary metric.
+- The ESW benchmark can read existing `structure.properties["esw"]` when `preprocess=False`.
 
-已执行的静态验证：
+Static validation has been executed:
 
 ```text
 python -m py_compile ...
 git diff --check
 ```
 
-这些检查已通过。
+These checks passed.
 
-已执行的 pytest：
+The following pytest command has been executed:
 
 ```text
 uv run pytest tests/test_esw_metric.py tests/test_validity_preprocess.py tests/test_hamgnn_readiness.py
 ```
 
-结果为 `9 passed`。测试中没有运行真实 MACE relaxation 或 MP API 调用，只覆盖轻量聚合和 readiness 逻辑。
+The result was `9 passed`. The tests did not run real MACE relaxation or MP API calls; they only covered lightweight aggregation and readiness logic.
 
-## 14. 兼容性说明
+## 14. Compatibility notes
 
-- 直接运行普通 validity benchmark 时，默认不启用氧化态分配，但会启用 forbidden-element validity 检查。
-- 如需完全恢复最初元素行为，可构造 `ValidityPreprocessor(forbidden_elements=[])`。
-- 单独运行 `lemat-genbench ... migration_barrier` 时，没有 comprehensive validity 阶段，但 migration barrier 内部仍会临时分配氧化态并保留原 fallback。
-- comprehensive run 中只有请求 `migration_barrier`、`band_gap` 或 `property` 且配置要求时才启用 property gating。
-- HamGNN readiness 只在请求 HamGNN backend 的 band gap 时启用；如果 band gap backend 改成 `alignn`，不会做 OpenMX `DFT_DATA19` 元素支持检查。
-- `overall_valid` 会受 forbidden-element validity 影响，但不受 BVlain/HamGNN readiness 影响，避免把“元素适用域”和“某个性质是否可计算”混在一起。
+- When running a normal validity benchmark directly, oxidation-state assignment is not enabled by default, but forbidden-element validity checks are enabled.
+- To fully restore the original element behavior, construct `ValidityPreprocessor(forbidden_elements=[])`.
+- When running `lemat-genbench ... migration_barrier` alone, there is no comprehensive validity stage, but migration barrier internally still performs temporary oxidation-state assignment and retains the original fallback.
+- In a comprehensive run, property gating is enabled only when `migration_barrier`, `band_gap`, or `property` is requested and the configuration requires it.
+- HamGNN readiness is enabled only when band gap is requested with the HamGNN backend. If the band gap backend is changed to `alignn`, the OpenMX `DFT_DATA19` element-support check is not performed.
+- `overall_valid` is affected by forbidden-element validity, but not by BVlain/HamGNN readiness, so that “element application domain” and “whether a specific property can be calculated” are not mixed together.
 
-## 15. ESW 集成
+## 15. ESW integration
 
-新增 `esw` benchmark family，用于计算 Li-exchange-only electrochemical stability window。该实现沿用 `esw_ea_calc.py` 的定义：
+A new `esw` benchmark family has been added to calculate the Li-exchange-only electrochemical stability window. This implementation follows the definition in `esw_ea_calc.py`:
 
 ```text
 ESW = widest continuous relative Li chemical-potential interval
       where abs(Li_exchange) <= gpd_stability_tol
 ```
 
-当前 ESW 不加入 reaction-energy / grand-potential e_above_hull 阈值，因此应解释为 Li-exchange-only ESW。
+The current ESW does not include a reaction-energy / grand-potential e_above_hull threshold, so it should be interpreted as a Li-exchange-only ESW.
 
-ESW 计算流程是：
+The ESW calculation workflow is:
 
 ```text
 input structure
@@ -584,15 +584,15 @@ input structure
 -> esw / reduction_potential / oxidation_potential / ehull
 ```
 
-默认设备策略是：
+The default device strategy is:
 
 ```yaml
 device: auto
 ```
 
-即如果 `torch.cuda.is_available()` 为 true，则使用 `cuda`，否则使用 `cpu`。
+This means that if `torch.cuda.is_available()` is true, `cuda` is used; otherwise, `cpu` is used.
 
-每个结构会写入：
+Each structure is written with:
 
 ```python
 structure.properties["esw"]
@@ -607,7 +607,7 @@ structure.properties["esw_stable_mu_min"]
 structure.properties["esw_stable_mu_max"]
 ```
 
-聚合输出包括：
+Aggregated outputs include:
 
 ```text
 mean_esw
@@ -615,10 +615,10 @@ median_esw
 min_esw
 max_esw
 fraction_esw_valid
-fraction_in_target_window  # 仅配置 target_min/target_max 后出现
+fraction_in_target_window  # appears only after target_min/target_max are configured
 ```
 
-默认配置位于：
+The default configuration is located at:
 
 ```yaml
 esw_settings:
@@ -636,17 +636,17 @@ esw_settings:
   gpd_stability_tol: 0.0001
 ```
 
-其中：
+Where:
 
-- `api_key: null` 表示运行时读取环境变量 `MP_API_KEY`。
-- `mace_model: null` 表示运行时读取环境变量 `MACE_MODEL_PATH`，若未设置则使用原脚本中的默认 MACE model 路径。
-- MP entries 和 MACE relaxation 结果默认缓存到 `data/esw_cache`。
-- MACE relaxation、MP entries 获取或 ESW 计算失败时，不会让整个 run 崩溃；该结构写入 `esw=None` 和 `esw_error`，聚合时由 `fraction_esw_valid` 反映成功比例。
+- `api_key: null` means the environment variable `MP_API_KEY` is read at runtime.
+- `mace_model: null` means the environment variable `MACE_MODEL_PATH` is read at runtime; if it is not set, the default MACE model path in the original script is used.
+- MP entries and MACE relaxation results are cached by default to `data/esw_cache`.
+- If MACE relaxation, MP entries retrieval, or ESW calculation fails, the entire run will not crash; the structure is written with `esw=None` and `esw_error`, and the success ratio is reflected by `fraction_esw_valid` during aggregation.
 
-`property` benchmark 新增：
+The `property` benchmark adds:
 
 ```yaml
 include_esw: false
 ```
 
-因此默认 property 行为仍保持 band gap + migration barrier；需要同时跑 ESW 时显式设为 true。
+Therefore, the default `property` behavior remains band gap + migration barrier. To run ESW at the same time, it must be explicitly set to true.
